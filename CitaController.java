@@ -18,7 +18,11 @@ public class CitaController {
     private final Queue<String> listaEsperaCardiologia = new LinkedList<>(Arrays.asList("PAC-101", "PAC-102", "PAC-103"));
     private static final long PLAZO_MINIMO_HORAS_MODIFICACION = 24;
 
-    // RF1: Asignación automática de cita al siguiente paciente en lista de espera
+    // >>> AÑADIDO (RF4 - Bloqueo de fechas por el paciente): Estructura de periodos bloqueados
+    private final Map<String, List<PeriodoBloqueadoDTO>> periodosBloqueados = new ConcurrentHashMap<>();
+    // <<< FIN AÑADIDO
+
+    // RF1: Asignación automática de cita al siguiente paciente en lista de espera[cite: 1]
     @PostMapping("/asignar-automatica")
     public ResponseEntity<?> asignarCitaDesdeListaEspera(@RequestBody SolicitudAsignacionDTO solicitud) {
         if (listaEsperaCardiologia.isEmpty()) {
@@ -39,7 +43,7 @@ public class CitaController {
 
         baseDatosCitas.put(idCita, nuevaCita);
 
-        // Simulación de sincronización con DIRAYA (RF3) y Notificación (RF5)
+        // Simulación de sincronización con DIRAYA (RF3) y Notificación (RF5)[cite: 2, 3]
         boolean sincronizadoDiraya = sincronizarConDiraya(nuevaCita);
         notificarPaciente(idPaciente, "Se le ha asignado una cita para el " + solicitud.fechaHora());
 
@@ -50,7 +54,7 @@ public class CitaController {
         ));
     }
 
-    // RF4: Aceptar cita por parte del paciente
+    // RF4: Aceptar cita por parte del paciente[cite: 2, 3]
     @PatchMapping("/{idCita}/aceptar")
     public ResponseEntity<?> aceptarCita(@PathVariable String idCita) {
         CitaDTO cita = baseDatosCitas.get(idCita);
@@ -63,7 +67,7 @@ public class CitaController {
         return ResponseEntity.ok(Map.of("mensaje", "Cita confirmada en el calendario y en DIRAYA.", "cita", cita));
     }
 
-    // RF4: Reprogramar o cancelar cita (con validación de plazo y flujo alternativo)
+    // RF4: Reprogramar o cancelar cita (con validación de plazo y flujo alternativo)[cite: 2, 3]
     @PutMapping("/{idCita}/gestionar")
     public ResponseEntity<?> reprogramarOCancelarCita(
             @PathVariable String idCita,
@@ -74,7 +78,7 @@ public class CitaController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "Cita no encontrada."));
         }
 
-        // Validación de plazo establecido por la administración (RF4 - Flujo Alternativo)
+        // Validación de plazo establecido por la administración (RF4 - Flujo Alternativo)[cite: 2, 3]
         long horasRestantes = ChronoUnit.HOURS.between(LocalDateTime.now(), cita.getFechaHora());
         if (horasRestantes < PLAZO_MINIMO_HORAS_MODIFICACION) {
             avisoPersonalAdministrativo(idCita, "Intento de modificación fuera de plazo por paciente " + cita.getIdPaciente());
@@ -86,7 +90,7 @@ public class CitaController {
 
         if ("CANCELAR".equalsIgnoreCase(accion.tipoAccion())) {
             cita.setEstado("CANCELADA");
-            // Se reincorpora al paciente o se reorganiza la lista de espera (RF4)
+            // Se reincorpora al paciente o se reorganiza la lista de espera (RF4)[cite: 2, 3]
             listaEsperaCardiologia.offer(cita.getIdPaciente());
             sincronizarConDiraya(cita);
             return ResponseEntity.ok(Map.of(
@@ -104,9 +108,28 @@ public class CitaController {
         return ResponseEntity.badRequest().body(Map.of("error", "Acción no válida. Use CANCELAR o REPROGRAMAR."));
     }
 
-    // Métodos auxiliares de integración (RF3, RF5)
+    // RF4 - Bloqueo de fechas por el paciente): Endpoint para bloquear un rango de fechas[cite: 2]
+    @PostMapping("/pacientes/{idPaciente}/bloquear-fechas")
+    public ResponseEntity<?> bloquearPeriodoPaciente(
+            @PathVariable String idPaciente,
+            @RequestBody PeriodoBloqueadoDTO periodo) {
+
+        if (periodo.fechaInicio() == null || periodo.fechaFin() == null || periodo.fechaFin().isBefore(periodo.fechaInicio())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Rango de fechas no válido."));
+        }
+
+        periodosBloqueados.computeIfAbsent(idPaciente, k -> new ArrayList<>()).add(periodo);
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "mensaje", "Periodo bloqueado correctamente. No se asignarán citas en estas fechas.",
+                "idPaciente", idPaciente,
+                "periodosActivos", periodosBloqueados.get(idPaciente)
+        ));
+    }
+
+    // Métodos auxiliares de integración (RF3, RF5)[cite: 2, 3]
     private boolean sincronizarConDiraya(CitaDTO cita) {
-        // Simulación de volcado HL7/FHIR hacia CPD Junta de Andalucía
+        // Simulación de volcado HL7/FHIR hacia CPD Junta de Andalucía[cite: 2]
         return true;
     }
 
@@ -121,6 +144,10 @@ public class CitaController {
     // DTOs internos para validación directa
     public record SolicitudAsignacionDTO(String idMedico, LocalDateTime fechaHora) {}
     public record AccionPacienteDTO(String tipoAccion, LocalDateTime nuevaFecha) {}
+
+    // >>> AÑADIDO (RF4 - Bloqueo de fechas por el paciente): DTO de periodo bloqueado[cite: 2]
+    public record PeriodoBloqueadoDTO(LocalDateTime fechaInicio, LocalDateTime fechaFin) {}
+    // <<< FIN AÑADIDO
 
     public static class CitaDTO {
         private String idCita;
